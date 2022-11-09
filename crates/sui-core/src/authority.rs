@@ -167,7 +167,6 @@ pub struct AuthorityMetrics {
 
     pub(crate) transaction_manager_num_missing_objects: IntGauge,
     pub(crate) transaction_manager_num_pending_certificates: IntGauge,
-    pub(crate) transaction_manager_objects_notified_via_scan: IntGauge,
     pub(crate) transaction_manager_num_ready: IntGauge,
 
     total_consensus_txns: IntCounter,
@@ -327,12 +326,6 @@ impl AuthorityMetrics {
             transaction_manager_num_pending_certificates: register_int_gauge_with_registry!(
                 "transaction_manager_num_pending_certificates",
                 "Current number of pending certificates in TransactionManager",
-                registry,
-            )
-            .unwrap(),
-            transaction_manager_objects_notified_via_scan: register_int_gauge_with_registry!(
-                "transaction_manager_objects_notified_via_scan",
-                "Current number of input objects found available via scanning in TransactionManager",
                 registry,
             )
             .unwrap(),
@@ -866,6 +859,7 @@ impl AuthorityState {
         certificate: &VerifiedCertificate,
         mut bypass_validator_halt: bool,
     ) -> SuiResult<VerifiedTransactionInfoResponse> {
+        let epoch = certificate.epoch();
         let digest = *certificate.digest();
         // The cert could have been processed by a concurrent attempt of the same cert, so check if
         // the effects have already been written.
@@ -983,7 +977,7 @@ impl AuthorityState {
         // TODO: investigate switching TransactionManager to use notify_read() on objects table.
         {
             let mut transaction_manager = self.transaction_manager.lock().await;
-            transaction_manager.objects_committed(output_keys);
+            transaction_manager.committed(epoch, &digest, output_keys);
         }
 
         // commit_certificate finished, the tx is fully committed to the store.
@@ -1692,9 +1686,8 @@ impl AuthorityState {
     pub async fn add_pending_certificates(&self, certs: Vec<VerifiedCertificate>) -> SuiResult<()> {
         self.node_sync_store
             .batch_store_certs(certs.iter().cloned())?;
-        self.database.store_pending_certificates(&certs)?;
         let mut transaction_manager = self.transaction_manager.lock().await;
-        transaction_manager.enqueue(certs).await
+        transaction_manager.enqueue_to_execute(certs).await
     }
 
     // Continually pop in-progress txes from the WAL and try to drive them to completion.
@@ -2365,18 +2358,16 @@ impl AuthorityState {
                     "handle_consensus_transaction UserTransaction",
                 );
 
-                if certificate.contains_shared_object() {
-                    self.database
-                        .record_shared_object_cert_from_consensus(&certificate, consensus_index)
-                        .await?;
-                } else {
-                    self.database
-                        .record_owned_object_cert_from_consensus(&certificate, consensus_index)
-                        .await?;
-                }
-
                 let mut transaction_manager = self.transaction_manager.lock().await;
-                transaction_manager.enqueue(vec![certificate]).await
+                transaction_manager
+                    .enqueue_to_execute(vec![certificate.clone()])
+                    .await?;
+
+                // Note: if the node crashes here between enquequeing to TransactionManager and
+                // marking the consensus message as processed, it is ok because the consensus
+                // message will be resent to TransactionManager and gets deduplicated.
+                self.database
+                    .finish_consensus_message_process(&certificate, consensus_index)
             }
             ConsensusTransactionKind::Checkpoint(fragment) => {
                 match &fragment.message {
