@@ -27,7 +27,7 @@ use tokio::{sync::watch, task::JoinHandle};
 use tracing::{debug, info};
 use types::{
     metered_channel, Batch, BatchDigest, Certificate, CertificateDigest, ConsensusStore, Header,
-    HeaderDigest, ReconfigureNotification, Round, RoundVoteDigestPair, SequenceNumber,
+    HeaderDigest, ReconfigureNotification, Round, SequenceNumber, VoteInfo,
 };
 use worker::{metrics::initialise_metrics, Worker};
 
@@ -38,7 +38,7 @@ pub mod restarter;
 /// All the data stores of the node.
 pub struct NodeStorage {
     pub proposer_store: ProposerStore,
-    pub vote_digest_store: Store<PublicKey, RoundVoteDigestPair>,
+    pub vote_digest_store: Store<PublicKey, VoteInfo>,
     pub header_store: Store<HeaderDigest, Header>,
     pub certificate_store: CertificateStore,
     pub payload_store: Store<(BatchDigest, WorkerId), PayloadToken>,
@@ -96,7 +96,7 @@ impl NodeStorage {
             temp_batch_map,
         ) = reopen!(&rocksdb,
             Self::LAST_PROPOSED_CF;<ProposerKey, Header>,
-            Self::VOTES_CF;<PublicKey, RoundVoteDigestPair>,
+            Self::VOTES_CF;<PublicKey, VoteInfo>,
             Self::HEADERS_CF;<HeaderDigest, Header>,
             Self::CERTIFICATES_CF;<CertificateDigest, Certificate>,
             Self::CERTIFICATE_DIGEST_BY_ROUND_CF;<(Round, PublicKey), CertificateDigest>,
