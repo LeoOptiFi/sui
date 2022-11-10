@@ -430,11 +430,16 @@ impl FromStr for AuthorityPublicKeyBytes {
 //
 
 pub trait SuiAuthoritySignature {
-    fn new<T>(value: &T, secret: &dyn Signer<Self>) -> Self
+    fn new<T>(value: &T, epoch_id: EpochId, secret: &dyn Signer<Self>) -> Self
     where
         T: Signable<Vec<u8>>;
 
-    fn verify<T>(&self, value: &T, author: AuthorityPublicKeyBytes) -> Result<(), SuiError>
+    fn verify<T>(
+        &self,
+        value: &T,
+        epoch_id: EpochId,
+        author: AuthorityPublicKeyBytes,
+    ) -> Result<(), SuiError>
     where
         T: Signable<Vec<u8>>;
 
@@ -453,16 +458,22 @@ pub trait SuiAuthoritySignature {
 }
 
 impl SuiAuthoritySignature for AuthoritySignature {
-    fn new<T>(value: &T, secret: &dyn Signer<Self>) -> Self
+    fn new<T>(value: &T, epoch_id: EpochId, secret: &dyn Signer<Self>) -> Self
     where
         T: Signable<Vec<u8>>,
     {
         let mut message = Vec::new();
         value.write(&mut message);
+        epoch_id.write(&mut message);
         secret.sign(&message)
     }
 
-    fn verify<T>(&self, value: &T, author: AuthorityPublicKeyBytes) -> Result<(), SuiError>
+    fn verify<T>(
+        &self,
+        value: &T,
+        epoch_id: EpochId,
+        author: AuthorityPublicKeyBytes,
+    ) -> Result<(), SuiError>
     where
         T: Signable<Vec<u8>>,
     {
@@ -475,6 +486,7 @@ impl SuiAuthoritySignature for AuthoritySignature {
         // serialize the message (see BCS serialization for determinism)
         let mut message = Vec::new();
         value.write(&mut message);
+        epoch_id.write(&mut message);
 
         // perform cryptographic signature check
         public_key
@@ -1031,7 +1043,7 @@ where
     T: Signable<Vec<u8>>,
 {
     let mut obligation = VerificationObligation::default();
-    let idx = obligation.add_message(data);
+    let idx = obligation.add_message(data, committee.epoch);
     sig.add_to_verification_obligation(committee, &mut obligation, idx)?;
     obligation.verify_all()?;
     Ok(())
@@ -1087,7 +1099,7 @@ impl AuthoritySignInfo {
         Self {
             epoch,
             authority: name,
-            signature: AuthoritySignature::new(value, secret),
+            signature: AuthoritySignature::new(value, epoch, secret),
         }
     }
 }
@@ -1372,6 +1384,15 @@ where
     }
 }
 
+impl<W> Signable<W> for EpochId
+where
+    W: std::io::Write,
+{
+    fn write(&self, writer: &mut W) {
+        bcs::serialize_into(writer, &self).expect("Message serialization should not fail");
+    }
+}
+
 impl<T> SignableBytes for T
 where
     T: bcs_signable::BcsSignable,
@@ -1442,12 +1463,13 @@ impl VerificationObligation {
 
     /// Add a new message to the list of messages to be verified.
     /// Returns the index of the message.
-    pub fn add_message<T>(&mut self, message_value: &T) -> usize
+    pub fn add_message<T>(&mut self, message_value: &T, epoch: EpochId) -> usize
     where
         T: Signable<Vec<u8>>,
     {
         let mut message = Vec::new();
         message_value.write(&mut message);
+        epoch.write(&mut message);
 
         self.signatures.push(AggregateAuthoritySignature::default());
         self.public_keys.push(Vec::new());
@@ -1521,7 +1543,7 @@ pub mod bcs_signable_test {
     {
         let mut obligation = VerificationObligation::default();
         // Add the obligation of the authority signature verifications.
-        let idx = obligation.add_message(value);
+        let idx = obligation.add_message(value, 0);
         (obligation, idx)
     }
 }
